@@ -1,0 +1,14 @@
+{
+  "name": "parallel-runtime",
+  "version": "0.1.0",
+  "description": "Parallel hosted bootstrap runtime for Cannon.",
+  "type": "module",
+  "exports": "./src/index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
