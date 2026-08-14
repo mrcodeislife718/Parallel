@@ -30,28 +30,11 @@ export function createRuntime(options = {}) {
       if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new TypeError('sleep(milliseconds) requires a non-negative finite number');
       await new Promise((resolve) => setTimeout(resolve, milliseconds));
     },
-
-    async readText(file) {
-      return fs.readFile(assertFileAllowed(file), 'utf8');
-    },
-
-    async writeText(file, content) {
-      const target = assertFileAllowed(file);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, String(content), 'utf8');
-    },
-
-    env(name) {
-      if (!permissions.environment.has(name)) throw new ParallelPermissionError('environment', name);
-      return process.env[name] ?? null;
-    },
-
-    permissions() {
-      return {
-        filesystem: [...permissions.filesystem],
-        environment: [...permissions.environment],
-        timers: permissions.timers,
-      };
-    },
+    async readText(file) { return fs.readFile(assertFileAllowed(file), 'utf8'); },
+    async writeText(file, content) { const target = assertFileAllowed(file); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, String(content), 'utf8'); },
+    env(name) { if (!permissions.environment.has(name)) throw new ParallelPermissionError('environment', name); return process.env[name] ?? null; },
+    permissions() { return { filesystem: [...permissions.filesystem], environment: [...permissions.environment], timers: permissions.timers }; },
   });
 }
+
+export * from './runtime.js';
