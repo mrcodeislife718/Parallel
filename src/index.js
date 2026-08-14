@@ -38,3 +38,4 @@ export function createRuntime(options = {}) {
 }
 
 export * from './runtime.js';
+export { nativeRuntimeManifest, buildNativeKernel, linkNativeProbe } from './native.js';
