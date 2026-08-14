@@ -76,7 +76,10 @@ export class TaskGroup {
   run(task) {
     const promise = Promise.resolve().then(() => task(this.controller.signal));
     this.tasks.add(promise);
-    promise.finally(() => this.tasks.delete(promise));
+    promise.then(
+      () => this.tasks.delete(promise),
+      () => this.tasks.delete(promise)
+    );
     return promise;
   }
   cancel(reason = new Error('task group cancelled')) { this.controller.abort(reason); }
@@ -105,8 +108,13 @@ export class WorkerPool {
 export function createStreams() {
   return Object.freeze({
     readable(source) { return Readable.from(source); },
-    writable({ write, close }) { return new Writable({ write(chunk, encoding, callback) { Promise.resolve(write(chunk, encoding)).then(() => callback(), callback); }, final(callback) { Promise.resolve(close?.()).then(() => callback(), callback); } }); },
-    transform(transformer) { return new Transform({ transform(chunk, encoding, callback) { Promise.resolve(transformer(chunk, encoding)).then((value) => callback(null, value), callback); } }); },
+    writable({ write, close }) { return new Writable({
+      write(chunk, encoding, callback) { Promise.resolve().then(() => write(chunk, encoding)).then(() => callback(), callback); },
+      final(callback) { Promise.resolve().then(() => close?.()).then(() => callback(), callback); }
+    }); },
+    transform(transformer) { return new Transform({
+      transform(chunk, encoding, callback) { Promise.resolve().then(() => transformer(chunk, encoding)).then((value) => callback(null, value), callback); }
+    }); },
     pipeline: (...streams) => pipeline(...streams)
   });
 }
