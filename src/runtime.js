@@ -15,7 +15,7 @@ const pipeline = promisify(nodePipeline);
 export class CapabilitySet {
   constructor(config = {}) {
     this.filesystem = (config.filesystem ?? []).map((entry) => path.resolve(entry));
-    this.environment = new Set(config.environment ?? []);
+    this.environment = new Set(config.environment ?? []),
     this.network = new Set(config.network ?? []);
     this.process = Boolean(config.process);
     this.crypto = config.crypto !== false;
@@ -74,16 +74,20 @@ export class TaskScheduler {
 export class TaskGroup {
   constructor() { this.controller = new AbortController(); this.tasks = new Set(); }
   run(task) {
-    const promise = Promise.resolve().then(() => task(this.controller.signal));
+    if (typeof task !== 'function') throw new TypeError('task group child must be a function');
+    let promise;
+    try { promise = Promise.resolve(task(this.controller.signal)); }
+    catch (error) { promise = Promise.reject(error); }
     this.tasks.add(promise);
-    promise.then(
-      () => this.tasks.delete(promise),
-      () => this.tasks.delete(promise)
-    );
     return promise;
   }
   cancel(reason = new Error('task group cancelled')) { this.controller.abort(reason); }
-  async join() { return Promise.allSettled([...this.tasks]); }
+  async join() {
+    const tasks = [...this.tasks];
+    const settled = await Promise.allSettled(tasks);
+    for (const task of tasks) this.tasks.delete(task);
+    return settled;
+  }
 }
 
 export class WorkerPool {
