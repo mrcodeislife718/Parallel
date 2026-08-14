@@ -163,7 +163,7 @@ export function createRuntimeModuleAbi(version = 1) {
 export class RuntimeProfiler {
   constructor() { this.samples = []; }
   async measure(name, work) { const start = process.hrtime.bigint(); const before = process.memoryUsage(); try { return await work(); } finally { const end = process.hrtime.bigint(); const after = process.memoryUsage(); this.samples.push({ name, durationNs: Number(end - start), heapDelta: after.heapUsed - before.heapUsed, rssDelta: after.rss - before.rss }); } }
-  report() { return this.samples.map(structuredClone); }
+  report() { return this.samples.map((sample) => structuredClone(sample)); }
 }
 
 export async function readFile(file, capabilities) { return fs.readFile(capabilities.assertFile(file)); }
