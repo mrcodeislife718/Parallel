@@ -26,6 +26,8 @@ typedef uint64_t parallel_timer_id;
 typedef uint64_t parallel_watch_id;
 typedef int (*parallel_task_fn)(void *context);
 typedef int (*parallel_io_fn)(int descriptor, uint32_t events, void *context);
+typedef int (*parallel_worker_fn)(void *context);
+typedef void (*parallel_worker_completion_fn)(int result, void *context);
 
 typedef struct parallel_runtime {
   uint32_t abi_version;
@@ -49,6 +51,19 @@ typedef struct parallel_process {
   int exit_code;
   int term_signal;
 } parallel_process;
+
+typedef struct parallel_worker_pool parallel_worker_pool;
+typedef struct parallel_worker_pool_stats {
+  size_t thread_count;
+  size_t queue_capacity;
+  size_t queued;
+  size_t active;
+  uint64_t submitted;
+  uint64_t completed;
+  uint64_t post_failures;
+  int closing;
+  int closed;
+} parallel_worker_pool_stats;
 
 int parallel_runtime_init(parallel_runtime *runtime, uint32_t capabilities);
 int parallel_runtime_has_capability(const parallel_runtime *runtime, parallel_capability capability);
@@ -102,6 +117,29 @@ int parallel_process_poll_exit(parallel_process *process);
 int parallel_process_signal(parallel_process *process, int signal_number);
 int parallel_process_close_pipes(parallel_process *process);
 int parallel_process_dispose(parallel_process *process, int terminate_signal);
+
+/*
+ * Native bounded worker pool. Work executes on pthreads; completion callbacks
+ * are marshalled back onto the owning Parallel reactor through
+ * parallel_runtime_post(). Close drains accepted work and joins every thread.
+ * The pool must be closed and destroyed before the owning runtime is closed.
+ */
+int parallel_worker_pool_create(
+  parallel_runtime *runtime,
+  size_t thread_count,
+  size_t queue_capacity,
+  parallel_worker_pool **pool_out
+);
+int parallel_worker_pool_submit(
+  parallel_worker_pool *pool,
+  parallel_worker_fn work,
+  void *work_context,
+  parallel_worker_completion_fn completion,
+  void *completion_context
+);
+int parallel_worker_pool_snapshot(parallel_worker_pool *pool, parallel_worker_pool_stats *stats);
+int parallel_worker_pool_close(parallel_worker_pool *pool);
+int parallel_worker_pool_destroy(parallel_worker_pool *pool);
 
 int parallel_runtime_run_once(parallel_runtime *runtime, uint64_t max_wait_ms);
 int parallel_runtime_run(parallel_runtime *runtime);
