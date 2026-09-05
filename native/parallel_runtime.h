@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define PARALLEL_NATIVE_ABI_VERSION 4u
+#define PARALLEL_NATIVE_ABI_VERSION 5u
 
 typedef enum parallel_capability {
   PARALLEL_CAP_TIMERS = 1u << 0,
@@ -40,6 +40,16 @@ typedef struct parallel_runtime {
   void *internal;
 } parallel_runtime;
 
+typedef struct parallel_process {
+  int64_t pid;
+  int stdin_descriptor;
+  int stdout_descriptor;
+  int stderr_descriptor;
+  int exited;
+  int exit_code;
+  int term_signal;
+} parallel_process;
+
 int parallel_runtime_init(parallel_runtime *runtime, uint32_t capabilities);
 int parallel_runtime_has_capability(const parallel_runtime *runtime, parallel_capability capability);
 uint64_t parallel_monotonic_ns(void);
@@ -56,11 +66,6 @@ int parallel_runtime_set_timeout(
 );
 int parallel_runtime_cancel_timer(parallel_runtime *runtime, parallel_timer_id timer_id);
 
-/*
- * Register a POSIX descriptor with Parallel's native reactor. The descriptor
- * remains owned by the caller; removing a watch never closes it. READABLE and
- * WRITABLE may be requested. ERROR/HANGUP are always reported when observed.
- */
 int parallel_runtime_watch_descriptor(
   parallel_runtime *runtime,
   int descriptor,
@@ -71,14 +76,6 @@ int parallel_runtime_watch_descriptor(
 );
 int parallel_runtime_unwatch_descriptor(parallel_runtime *runtime, parallel_watch_id watch_id);
 
-/*
- * Native nonblocking TCP. All functions require PARALLEL_CAP_NETWORK on the
- * owning runtime where a runtime is supplied. connect returns 1 when connected
- * immediately and 0 when connection completion must be awaited with WRITABLE.
- * finish_connect returns 1 on success, 0 while still pending, or a negative
- * error. read/write return transferred bytes, 0 for EOF on read, -11 for
- * EAGAIN/EWOULDBLOCK, and another negative value on error.
- */
 int parallel_tcp_connect(parallel_runtime *runtime, const char *host, uint16_t port, int *descriptor);
 int parallel_tcp_finish_connect(int descriptor);
 int parallel_tcp_listen(parallel_runtime *runtime, const char *host, uint16_t port, int backlog, int *descriptor);
@@ -88,7 +85,30 @@ int64_t parallel_tcp_write(int descriptor, const void *buffer, size_t length);
 int parallel_tcp_set_nodelay(int descriptor, int enabled);
 int parallel_tcp_close(int descriptor);
 
-/* Run at most one ready task, timer, or descriptor callback. */
+/*
+ * Native subprocess execution. No shell is inserted. argv must be NULL-terminated
+ * and argv[0] must be present. A NULL envp means a deliberately empty child
+ * environment rather than inheriting the parent environment. stdin/stdout/stderr
+ * are always created as nonblocking pipes owned by the returned process handle.
+ */
+int parallel_process_spawn(
+  parallel_runtime *runtime,
+  const char *executable,
+  char *const argv[],
+  char *const envp[],
+  const char *cwd,
+  parallel_process *process
+);
+int64_t parallel_process_write_stdin(parallel_process *process, const void *buffer, size_t length);
+int parallel_process_close_stdin(parallel_process *process);
+int64_t parallel_process_read_stdout(parallel_process *process, void *buffer, size_t capacity);
+int64_t parallel_process_read_stderr(parallel_process *process, void *buffer, size_t capacity);
+int parallel_process_poll_exit(parallel_process *process);
+int parallel_process_signal(parallel_process *process, int signal_number);
+int parallel_process_close_pipes(parallel_process *process);
+/* terminate_signal <= 0 refuses to dispose a still-running process with -16. */
+int parallel_process_dispose(parallel_process *process, int terminate_signal);
+
 int parallel_runtime_run_once(parallel_runtime *runtime, uint64_t max_wait_ms);
 int parallel_runtime_run(parallel_runtime *runtime);
 int parallel_runtime_stop(parallel_runtime *runtime);
