@@ -26,7 +26,7 @@ static int set_nonblocking(int descriptor) {
 }
 
 static int resolve_host(const char *host, uint16_t port, int passive, struct addrinfo **result) {
-  if (host == NULL || result == NULL || port == 0) return -1;
+  if (host == NULL || result == NULL) return -1;
   char service[6];
   int written = snprintf(service, sizeof(service), "%u", (unsigned int) port);
   if (written <= 0 || (size_t) written >= sizeof(service)) return -4;
@@ -91,7 +91,7 @@ int parallel_tcp_finish_connect(int descriptor) {
 int parallel_tcp_listen(parallel_runtime *runtime, const char *host, uint16_t port, int backlog, int *descriptor) {
   int permission = require_network(runtime);
   if (permission != 0) return permission;
-  if (host == NULL || descriptor == NULL || port == 0 || backlog < 1) return -1;
+  if (host == NULL || descriptor == NULL || backlog < 1) return -1;
 
   struct addrinfo *addresses = NULL;
   int resolved = resolve_host(host, port, 1, &addresses);
