@@ -10,7 +10,7 @@ const nativeRoot = path.resolve(here, '..', 'native');
 export function nativeRuntimeManifest() {
   return {
     protocol: 'parallel-native/1',
-    abiVersion: 3,
+    abiVersion: 4,
     implementation: 'c11-posix-reactor',
     capabilities: ['timers','filesystem','network','process','crypto','workers'],
     eventLoop: [
@@ -19,6 +19,9 @@ export function nativeRuntimeManifest() {
       'timer-cancellation',
       'descriptor-readiness',
       'poll-reactor',
+      'native-tcp-connect',
+      'native-tcp-listen',
+      'native-tcp-read-write',
       'bounded-run-once',
       'continuous-run',
       'stop-close-lifecycle'
@@ -32,17 +35,24 @@ export async function buildNativeKernel({ cc = process.env.CC || 'cc', outDir, e
   if (!outDir) throw new Error('buildNativeKernel requires outDir');
   const root = path.resolve(outDir);
   await fs.mkdir(root, { recursive: true });
-  const source = path.join(nativeRoot, 'parallel_runtime.c');
-  const object = path.join(root, 'parallel_runtime.o');
-  const result = await run(cc, ['-std=c11','-O2','-Wall','-Wextra','-Werror','-I',nativeRoot,'-c',source,'-o',object,...extraFlags]);
-  if (!result.ok) return { ok:false, result, object:null, manifest:nativeRuntimeManifest() };
-  const bytes = await fs.readFile(object);
+  const runtimeSource = path.join(nativeRoot, 'parallel_runtime.c');
+  const tcpSource = path.join(nativeRoot, 'parallel_tcp.c');
+  const runtimeObject = path.join(root, 'parallel_runtime.o');
+  const tcpObject = path.join(root, 'parallel_tcp.o');
+  const runtimeResult = await run(cc, ['-std=c11','-O2','-Wall','-Wextra','-Werror','-I',nativeRoot,'-c',runtimeSource,'-o',runtimeObject,...extraFlags]);
+  if (!runtimeResult.ok) return { ok:false, result:runtimeResult, objects:[], manifest:nativeRuntimeManifest() };
+  const tcpResult = await run(cc, ['-std=c11','-O2','-Wall','-Wextra','-Werror','-I',nativeRoot,'-c',tcpSource,'-o',tcpObject,...extraFlags]);
+  if (!tcpResult.ok) return { ok:false, result:tcpResult, objects:[runtimeObject], manifest:nativeRuntimeManifest() };
+  const runtimeBytes = await fs.readFile(runtimeObject);
+  const tcpBytes = await fs.readFile(tcpObject);
+  const digest = crypto.createHash('sha256').update(runtimeBytes).update(tcpBytes).digest('hex');
   return {
     ok: true,
-    object,
-    digest: crypto.createHash('sha256').update(bytes).digest('hex'),
-    bytes: bytes.length,
-    result,
+    object: runtimeObject,
+    objects: [runtimeObject, tcpObject],
+    digest,
+    bytes: runtimeBytes.length + tcpBytes.length,
+    result: { runtime: runtimeResult, tcp: tcpResult },
     manifest: nativeRuntimeManifest()
   };
 }
@@ -54,7 +64,13 @@ export async function linkNativeProbe(sourceText, { cc = process.env.CC || 'cc',
   const probe = path.join(root, 'probe.c');
   const binary = path.join(root, process.platform === 'win32' ? 'parallel-probe.exe' : 'parallel-probe');
   await fs.writeFile(probe, sourceText, 'utf8');
-  const compile = await run(cc, ['-std=c11','-O2','-Wall','-Wextra','-Werror','-I',nativeRoot,probe,path.join(nativeRoot,'parallel_runtime.c'),'-o',binary]);
+  const compile = await run(cc, [
+    '-std=c11','-O2','-Wall','-Wextra','-Werror','-I',nativeRoot,
+    probe,
+    path.join(nativeRoot,'parallel_runtime.c'),
+    path.join(nativeRoot,'parallel_tcp.c'),
+    '-o',binary
+  ]);
   if (!compile.ok) return { ok:false, stage:'compile', compile };
   const execute = await run(binary, []);
   return { ...execute, stage:'execute', compile, binary };
