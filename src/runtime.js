@@ -21,6 +21,7 @@ export class CapabilitySet {
     this.filesystem = [...new Set([...this.filesystemRead, ...this.filesystemWrite])];
     this.environment = new Set(config.environment ?? []);
     this.network = new Set(config.network ?? []);
+    this.imports = normalizeImportCapability(config.imports ?? config.import);
     this.process = normalizeProcessCapability(config.process);
     this.crypto = config.crypto !== false;
     this.timers = config.timers !== false;
@@ -41,11 +42,8 @@ export class CapabilitySet {
       try { return await fs.realpath(root); } catch (error) { if (error.code === 'ENOENT') return root; throw error; }
     }));
     let physical;
-    if (access === 'read') {
-      physical = await fs.realpath(lexical);
-    } else {
-      physical = await resolveWriteTarget(lexical);
-    }
+    if (access === 'read') physical = await fs.realpath(lexical);
+    else physical = await resolveWriteTarget(lexical);
     if (!insideAnyRoot(physical, resolvedRoots)) throw new ParallelPermissionError(`filesystem.${access}`, physical);
     return physical;
   }
@@ -56,6 +54,13 @@ export class CapabilitySet {
     const key = `${host}:${port}`;
     if (!this.network.has('*') && !this.network.has(host) && !this.network.has(key)) throw new ParallelPermissionError('network', key);
     return key;
+  }
+
+  assertImport(specifier) {
+    if (typeof specifier !== 'string' || !specifier) throw new TypeError('import specifier must be a non-empty string');
+    if (this.imports === true) return specifier;
+    if (this.imports === false || (!this.imports.has('*') && !this.imports.has(specifier))) throw new ParallelPermissionError('import', specifier);
+    return specifier;
   }
 
   assertEnv(name) { if (!this.environment.has(name)) throw new ParallelPermissionError('environment', name); }
@@ -78,6 +83,7 @@ export class CapabilitySet {
       filesystemWrite: [...this.filesystemWrite],
       environment: [...this.environment],
       network: [...this.network],
+      imports: this.imports instanceof Set ? [...this.imports].sort() : this.imports,
       process: this.process instanceof Set ? [...this.process].sort() : this.process,
       crypto: this.crypto,
       timers: this.timers,
@@ -123,10 +129,7 @@ export class TaskGroup {
     return promise;
   }
   cancel(reason = new Error('task group cancelled')) { this.controller.abort(reason); }
-  async join() {
-    const tasks = [...this.tasks];
-    return Promise.allSettled(tasks);
-  }
+  async join() { return Promise.allSettled([...this.tasks]); }
 }
 
 export class WorkerPool {
@@ -158,13 +161,8 @@ export class WorkerPool {
 export function createStreams() {
   return Object.freeze({
     readable(source) { return Readable.from(source); },
-    writable({ write, close }) { return new Writable({
-      write(chunk, encoding, callback) { Promise.resolve().then(() => write(chunk, encoding)).then(() => callback(), callback); },
-      final(callback) { Promise.resolve().then(() => close?.()).then(() => callback(), callback); }
-    }); },
-    transform(transformer) { return new Transform({
-      transform(chunk, encoding, callback) { Promise.resolve().then(() => transformer(chunk, encoding)).then((value) => callback(null, value), callback); }
-    }); },
+    writable({ write, close }) { return new Writable({ write(chunk, encoding, callback) { Promise.resolve().then(() => write(chunk, encoding)).then(() => callback(), callback); }, final(callback) { Promise.resolve().then(() => close?.()).then(() => callback(), callback); } }); },
+    transform(transformer) { return new Transform({ transform(chunk, encoding, callback) { Promise.resolve().then(() => transformer(chunk, encoding)).then((value) => callback(null, value), callback); } }); },
     pipeline: (...streams) => pipeline(...streams)
   });
 }
@@ -194,33 +192,13 @@ export function createHttpServer(handler, { tls = null, maxBodyBytes = 1024 * 10
   return tls ? https.createServer(tls, listener) : http.createServer(listener);
 }
 
-export function connectTcp(host, port, capabilities) {
-  capabilities?.assertHost(host, port);
-  return new Promise((resolve, reject) => { const socket = net.createConnection({ host, port }, () => resolve(socket)); socket.once('error', reject); });
-}
-
-export function spawnProcess(command, args = [], options = {}, capabilities) {
-  capabilities?.assertProcess(command);
-  return spawn(command, args, { stdio: 'pipe', ...options });
-}
-
-export function createCrypto(capabilities) {
-  return Object.freeze({
-    randomBytes(size) { capabilities?.assertCrypto(); return crypto.randomBytes(size); },
-    digest(algorithm, data) { capabilities?.assertCrypto(); return crypto.createHash(algorithm).update(data).digest(); },
-    hmac(algorithm, key, data) { capabilities?.assertCrypto(); return crypto.createHmac(algorithm, key).update(data).digest(); },
-    timingSafeEqual(a, b) { capabilities?.assertCrypto(); return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b)); }
-  });
-}
+export function connectTcp(host, port, capabilities) { capabilities?.assertHost(host, port); return new Promise((resolve, reject) => { const socket = net.createConnection({ host, port }, () => resolve(socket)); socket.once('error', reject); }); }
+export function spawnProcess(command, args = [], options = {}, capabilities) { capabilities?.assertProcess(command); return spawn(command, args, { stdio: 'pipe', ...options }); }
+export function createCrypto(capabilities) { return Object.freeze({ randomBytes(size) { capabilities?.assertCrypto(); return crypto.randomBytes(size); }, digest(algorithm, data) { capabilities?.assertCrypto(); return crypto.createHash(algorithm).update(data).digest(); }, hmac(algorithm, key, data) { capabilities?.assertCrypto(); return crypto.createHmac(algorithm, key).update(data).digest(); }, timingSafeEqual(a, b) { capabilities?.assertCrypto(); return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b)); } }); }
 
 export function createRuntimeModuleAbi(version = 1) {
   const modules = new Map();
-  return {
-    version,
-    register(name, factory) { if (modules.has(name)) throw new Error(`runtime module already registered: ${name}`); if (typeof factory !== 'function') throw new TypeError('module factory must be a function'); modules.set(name, factory); },
-    load(name, context = {}) { const factory = modules.get(name); if (!factory) throw new Error(`unknown runtime module: ${name}`); return factory({ abiVersion: version, ...context }); },
-    list() { return [...modules.keys()].sort(); }
-  };
+  return { version, register(name, factory) { if (modules.has(name)) throw new Error(`runtime module already registered: ${name}`); if (typeof factory !== 'function') throw new TypeError('module factory must be a function'); modules.set(name, factory); }, load(name, context = {}) { const factory = modules.get(name); if (!factory) throw new Error(`unknown runtime module: ${name}`); return factory({ abiVersion: version, ...context }); }, list() { return [...modules.keys()].sort(); } };
 }
 
 export class RuntimeProfiler {
@@ -235,22 +213,6 @@ export async function writeFile(file, data, capabilities) { if (!capabilities) t
 function normalizeRoots(values) { return [...new Set((values ?? []).map((entry) => path.resolve(entry)))]; }
 function insideAnyRoot(target, roots) { return roots.some((root) => target === root || target.startsWith(root + path.sep)); }
 function normalizeProcessCapability(value) { if (value === true) return true; if (!value) return false; if (!Array.isArray(value)) throw new TypeError('process capability must be boolean or an array of executable names'); return new Set(value.map(String)); }
-function processCommandIdentity(command) { const value = String(command); return path.basename(value); }
-async function resolveWriteTarget(target) {
-  try { return await fs.realpath(target); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  let cursor = path.dirname(target);
-  const missing = [path.basename(target)];
-  while (true) {
-    try {
-      const real = await fs.realpath(cursor);
-      return path.join(real, ...missing.reverse());
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      const parent = path.dirname(cursor);
-      if (parent === cursor) throw new ParallelPermissionError('filesystem.write', target);
-      missing.push(path.basename(cursor));
-      cursor = parent;
-    }
-  }
-}
+function normalizeImportCapability(value) { if (value === true) return true; if (!value) return false; if (!Array.isArray(value)) throw new TypeError('import capability must be boolean or an array of module specifiers'); return new Set(value.map(String)); }
+function processCommandIdentity(command) { return path.basename(String(command)); }
+async function resolveWriteTarget(target) { try { return await fs.realpath(target); } catch (error) { if (error.code !== 'ENOENT') throw error; } let cursor = path.dirname(target); const missing = [path.basename(target)]; while (true) { try { const real = await fs.realpath(cursor); return path.join(real, ...missing.reverse()); } catch (error) { if (error.code !== 'ENOENT') throw error; const parent = path.dirname(cursor); if (parent === cursor) throw new ParallelPermissionError('filesystem.write', target); missing.push(path.basename(cursor)); cursor = parent; } } }
