@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define PARALLEL_NATIVE_ABI_VERSION 3u
+#define PARALLEL_NATIVE_ABI_VERSION 4u
 
 typedef enum parallel_capability {
   PARALLEL_CAP_TIMERS = 1u << 0,
@@ -70,6 +70,23 @@ int parallel_runtime_watch_descriptor(
   parallel_watch_id *watch_id
 );
 int parallel_runtime_unwatch_descriptor(parallel_runtime *runtime, parallel_watch_id watch_id);
+
+/*
+ * Native nonblocking TCP. All functions require PARALLEL_CAP_NETWORK on the
+ * owning runtime where a runtime is supplied. connect returns 1 when connected
+ * immediately and 0 when connection completion must be awaited with WRITABLE.
+ * finish_connect returns 1 on success, 0 while still pending, or a negative
+ * error. read/write return transferred bytes, 0 for EOF on read, -11 for
+ * EAGAIN/EWOULDBLOCK, and another negative value on error.
+ */
+int parallel_tcp_connect(parallel_runtime *runtime, const char *host, uint16_t port, int *descriptor);
+int parallel_tcp_finish_connect(int descriptor);
+int parallel_tcp_listen(parallel_runtime *runtime, const char *host, uint16_t port, int backlog, int *descriptor);
+int parallel_tcp_accept(parallel_runtime *runtime, int listener_descriptor, int *client_descriptor);
+int64_t parallel_tcp_read(int descriptor, void *buffer, size_t capacity);
+int64_t parallel_tcp_write(int descriptor, const void *buffer, size_t length);
+int parallel_tcp_set_nodelay(int descriptor, int enabled);
+int parallel_tcp_close(int descriptor);
 
 /* Run at most one ready task, timer, or descriptor callback. */
 int parallel_runtime_run_once(parallel_runtime *runtime, uint64_t max_wait_ms);
