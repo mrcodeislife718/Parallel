@@ -14,35 +14,75 @@ const pipeline = promisify(nodePipeline);
 
 export class CapabilitySet {
   constructor(config = {}) {
-    this.filesystem = (config.filesystem ?? []).map((entry) => path.resolve(entry));
-    this.environment = new Set(config.environment ?? []),
+    const legacyFilesystem = Array.isArray(config.filesystem) ? config.filesystem : [];
+    const filesystemConfig = config.filesystem && !Array.isArray(config.filesystem) && typeof config.filesystem === 'object' ? config.filesystem : {};
+    this.filesystemRead = normalizeRoots(config.read ?? filesystemConfig.read ?? legacyFilesystem);
+    this.filesystemWrite = normalizeRoots(config.write ?? filesystemConfig.write ?? legacyFilesystem);
+    this.filesystem = [...new Set([...this.filesystemRead, ...this.filesystemWrite])];
+    this.environment = new Set(config.environment ?? []);
     this.network = new Set(config.network ?? []);
-    this.process = Boolean(config.process);
+    this.process = normalizeProcessCapability(config.process);
     this.crypto = config.crypto !== false;
     this.timers = config.timers !== false;
     this.workers = config.workers !== false;
   }
 
-  assertFile(target) {
+  assertFile(target, access = 'read') {
     const resolved = path.resolve(target);
-    if (!this.filesystem.some((root) => resolved === root || resolved.startsWith(root + path.sep))) throw new ParallelPermissionError('filesystem', resolved);
+    const roots = access === 'write' ? this.filesystemWrite : this.filesystemRead;
+    if (!insideAnyRoot(resolved, roots)) throw new ParallelPermissionError(`filesystem.${access}`, resolved);
     return resolved;
   }
 
+  async resolveFile(target, access = 'read') {
+    const lexical = this.assertFile(target, access);
+    const roots = access === 'write' ? this.filesystemWrite : this.filesystemRead;
+    const resolvedRoots = await Promise.all(roots.map(async (root) => {
+      try { return await fs.realpath(root); } catch (error) { if (error.code === 'ENOENT') return root; throw error; }
+    }));
+    let physical;
+    if (access === 'read') {
+      physical = await fs.realpath(lexical);
+    } else {
+      physical = await resolveWriteTarget(lexical);
+    }
+    if (!insideAnyRoot(physical, resolvedRoots)) throw new ParallelPermissionError(`filesystem.${access}`, physical);
+    return physical;
+  }
+
   assertHost(host, port) {
+    if (typeof host !== 'string' || !host) throw new TypeError('network host must be a non-empty string');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new TypeError('network port must be between 1 and 65535');
     const key = `${host}:${port}`;
     if (!this.network.has('*') && !this.network.has(host) && !this.network.has(key)) throw new ParallelPermissionError('network', key);
     return key;
   }
 
   assertEnv(name) { if (!this.environment.has(name)) throw new ParallelPermissionError('environment', name); }
-  assertProcess() { if (!this.process) throw new ParallelPermissionError('process'); }
+  assertProcess(command = null) {
+    if (this.process === true) return true;
+    if (this.process === false) throw new ParallelPermissionError('process', command ?? undefined);
+    if (!command) throw new ParallelPermissionError('process');
+    const normalized = processCommandIdentity(command);
+    if (!this.process.has(command) && !this.process.has(normalized)) throw new ParallelPermissionError('process', command);
+    return true;
+  }
   assertCrypto() { if (!this.crypto) throw new ParallelPermissionError('crypto'); }
   assertTimers() { if (!this.timers) throw new ParallelPermissionError('timers'); }
   assertWorkers() { if (!this.workers) throw new ParallelPermissionError('workers'); }
 
   snapshot() {
-    return { filesystem: [...this.filesystem], environment: [...this.environment], network: [...this.network], process: this.process, crypto: this.crypto, timers: this.timers, workers: this.workers };
+    return {
+      filesystem: [...this.filesystem],
+      filesystemRead: [...this.filesystemRead],
+      filesystemWrite: [...this.filesystemWrite],
+      environment: [...this.environment],
+      network: [...this.network],
+      process: this.process instanceof Set ? [...this.process].sort() : this.process,
+      crypto: this.crypto,
+      timers: this.timers,
+      workers: this.workers
+    };
   }
 }
 
@@ -79,14 +119,13 @@ export class TaskGroup {
     try { promise = Promise.resolve(task(this.controller.signal)); }
     catch (error) { promise = Promise.reject(error); }
     this.tasks.add(promise);
+    promise.finally(() => this.tasks.delete(promise)).catch(() => {});
     return promise;
   }
   cancel(reason = new Error('task group cancelled')) { this.controller.abort(reason); }
   async join() {
     const tasks = [...this.tasks];
-    const settled = await Promise.allSettled(tasks);
-    for (const task of tasks) this.tasks.delete(task);
-    return settled;
+    return Promise.allSettled(tasks);
   }
 }
 
@@ -98,15 +137,22 @@ export class WorkerPool {
     this.workers = Array.from({ length: size }, () => new Worker(workerUrl, { workerData }));
     this.cursor = 0;
     this.pending = new Map();
-    for (const worker of this.workers) worker.on('message', (message) => this.#onMessage(message));
+    this.closed = false;
+    for (const worker of this.workers) {
+      worker.on('message', (message) => this.#onMessage(message));
+      worker.on('error', (error) => this.#failWorker(error));
+      worker.on('exit', (code) => { if (!this.closed && code !== 0) this.#failWorker(new Error(`Parallel worker exited with code ${code}`)); });
+    }
   }
   exec(payload) {
+    if (this.closed) return Promise.reject(new Error('worker pool is closed'));
     const id = crypto.randomUUID();
     const worker = this.workers[this.cursor++ % this.workers.length];
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); worker.postMessage({ id, payload }); });
   }
   #onMessage(message) { const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); if (message.error) pending.reject(Object.assign(new Error(message.error.message), message.error)); else pending.resolve(message.value); }
-  async close() { await Promise.all(this.workers.map((worker) => worker.terminate())); }
+  #failWorker(error) { for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); }
+  async close() { this.closed = true; for (const pending of this.pending.values()) pending.reject(new Error('worker pool closed')); this.pending.clear(); await Promise.all(this.workers.map((worker) => worker.terminate())); }
 }
 
 export function createStreams() {
@@ -123,22 +169,27 @@ export function createStreams() {
   });
 }
 
-export function createHttpServer(handler, { tls = null } = {}) {
+export function createHttpServer(handler, { tls = null, maxBodyBytes = 1024 * 1024, exposeErrors = false } = {}) {
   if (typeof handler !== 'function') throw new TypeError('HTTP handler must be a function');
+  if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1) throw new TypeError('maxBodyBytes must be a positive integer');
   const listener = async (req, res) => {
     try {
-      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      const declared = req.headers['content-length'] == null ? null : Number(req.headers['content-length']);
+      if (declared != null && (!Number.isSafeInteger(declared) || declared < 0)) throw new Error('invalid content-length');
+      if (declared != null && declared > maxBodyBytes) { res.statusCode = 413; res.end(); return; }
+      const chunks = []; let total = 0;
+      for await (const chunk of req) { total += chunk.length; if (total > maxBodyBytes) { req.destroy(); res.statusCode = 413; res.end(); return; } chunks.push(chunk); }
       const request = { method: req.method, url: `http://${req.headers.host ?? 'localhost'}${req.url}`, headers: req.headers, body: Buffer.concat(chunks) };
       const response = await handler(request);
       res.statusCode = response?.status ?? 200;
       for (const [name, value] of Object.entries(response?.headers ?? {})) res.setHeader(name, value);
       const body = response?.body;
-      if (body?.type === 'stream' && body.iterable) { for await (const chunk of body.iterable) res.write(chunk); res.end(); return; }
+      if (body?.type === 'stream' && body.iterable) { for await (const chunk of body.iterable) { if (!res.write(chunk)) await new Promise((resolve) => res.once('drain', resolve)); } res.end(); return; }
       if (Buffer.isBuffer(body) || typeof body === 'string') { res.end(body); return; }
       if (body == null) { res.end(); return; }
       if (!res.hasHeader('content-type')) res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify(body));
-    } catch (error) { res.statusCode = 500; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ error: 'internal_error', message: error.message })); }
+    } catch (error) { if (res.headersSent) { res.destroy(error); return; } res.statusCode = 500; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(exposeErrors ? { error: 'internal_error', message: error.message } : { error: 'internal_error' })); }
   };
   return tls ? https.createServer(tls, listener) : http.createServer(listener);
 }
@@ -149,7 +200,7 @@ export function connectTcp(host, port, capabilities) {
 }
 
 export function spawnProcess(command, args = [], options = {}, capabilities) {
-  capabilities?.assertProcess();
+  capabilities?.assertProcess(command);
   return spawn(command, args, { stdio: 'pipe', ...options });
 }
 
@@ -178,5 +229,28 @@ export class RuntimeProfiler {
   report() { return this.samples.map((sample) => structuredClone(sample)); }
 }
 
-export async function readFile(file, capabilities) { return fs.readFile(capabilities.assertFile(file)); }
-export async function writeFile(file, data, capabilities) { const target = capabilities.assertFile(file); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, data); }
+export async function readFile(file, capabilities) { if (!capabilities) throw new ParallelPermissionError('filesystem.read', path.resolve(file)); return fs.readFile(await capabilities.resolveFile(file, 'read')); }
+export async function writeFile(file, data, capabilities) { if (!capabilities) throw new ParallelPermissionError('filesystem.write', path.resolve(file)); const target = await capabilities.resolveFile(file, 'write'); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, data); }
+
+function normalizeRoots(values) { return [...new Set((values ?? []).map((entry) => path.resolve(entry)))]; }
+function insideAnyRoot(target, roots) { return roots.some((root) => target === root || target.startsWith(root + path.sep)); }
+function normalizeProcessCapability(value) { if (value === true) return true; if (!value) return false; if (!Array.isArray(value)) throw new TypeError('process capability must be boolean or an array of executable names'); return new Set(value.map(String)); }
+function processCommandIdentity(command) { const value = String(command); return path.basename(value); }
+async function resolveWriteTarget(target) {
+  try { return await fs.realpath(target); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  let cursor = path.dirname(target);
+  const missing = [path.basename(target)];
+  while (true) {
+    try {
+      const real = await fs.realpath(cursor);
+      return path.join(real, ...missing.reverse());
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw new ParallelPermissionError('filesystem.write', target);
+      missing.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
