@@ -28,6 +28,10 @@ export function nativeRuntimeManifest() {
       'native-process-pipes',
       'native-process-signals',
       'native-process-exit-polling',
+      'native-worker-pool',
+      'bounded-worker-queue',
+      'reactor-thread-worker-completion',
+      'worker-join-shutdown',
       'bounded-run-once',
       'continuous-run',
       'stop-close-lifecycle'
@@ -45,6 +49,7 @@ export async function buildNativeKernel({ cc = process.env.CC || 'cc', outDir, e
     ['runtime', path.join(nativeRoot, 'parallel_runtime.c')],
     ['tcp', path.join(nativeRoot, 'parallel_tcp.c')],
     ['process', path.join(nativeRoot, 'parallel_process.c')],
+    ['workers', path.join(nativeRoot, 'parallel_workers.c')],
   ];
   const objects = [];
   const results = {};
@@ -86,6 +91,7 @@ export async function linkNativeProbe(sourceText, { cc = process.env.CC || 'cc',
     path.join(nativeRoot,'parallel_runtime.c'),
     path.join(nativeRoot,'parallel_tcp.c'),
     path.join(nativeRoot,'parallel_process.c'),
+    path.join(nativeRoot,'parallel_workers.c'),
     '-o',binary
   ]);
   if (!compile.ok) return { ok:false, stage:'compile', compile };
