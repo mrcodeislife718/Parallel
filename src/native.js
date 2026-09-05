@@ -10,11 +10,12 @@ const nativeRoot = path.resolve(here, '..', 'native');
 export function nativeRuntimeManifest() {
   return {
     protocol: 'parallel-native/1',
-    abiVersion: 1,
+    abiVersion: 2,
     implementation: 'c11',
     capabilities: ['timers','filesystem','network','process','crypto','workers'],
+    eventLoop: ['fifo-tasks','one-shot-timers','timer-cancellation','bounded-run-once','continuous-run','stop-close-lifecycle'],
     boundary: 'native-kernel',
-    status: 'transition-path'
+    status: 'active-native-transition'
   };
 }
 
@@ -52,7 +53,7 @@ export async function linkNativeProbe(sourceText, { cc = process.env.CC || 'cc',
 
 function run(bin, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio:'pipe' });
+    const child = spawn(bin, args, { stdio:'pipe', shell:false });
     let stdout='', stderr='';
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => stdout += chunk);
