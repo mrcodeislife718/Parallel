@@ -115,9 +115,9 @@ function normalizeDenies(deny = {}) {
 function normalizePathRules(value) {
   if (value === true || !value) return value;
   if (!Array.isArray(value)) throw new TypeError('filesystem deny rules must be boolean or arrays');
-  return value.map((entry) => {
+  return value.flatMap((entry) => {
     const resolved = path.resolve(String(entry));
-    return resolved.endsWith(path.sep) ? resolved : `${resolved}${path.sep}`;
+    return [resolved, `${resolved}${path.sep}`];
   });
 }
 
