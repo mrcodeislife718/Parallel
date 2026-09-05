@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define PARALLEL_NATIVE_ABI_VERSION 5u
+#define PARALLEL_NATIVE_ABI_VERSION 6u
 
 typedef enum parallel_capability {
   PARALLEL_CAP_TIMERS = 1u << 0,
@@ -55,6 +55,7 @@ int parallel_runtime_has_capability(const parallel_runtime *runtime, parallel_ca
 uint64_t parallel_monotonic_ns(void);
 
 int parallel_runtime_execute(parallel_runtime *runtime, parallel_task_fn task, void *context);
+/* Thread-safe while the runtime is open. External producer threads must be joined before close. */
 int parallel_runtime_post(parallel_runtime *runtime, parallel_task_fn task, void *context);
 
 int parallel_runtime_set_timeout(
@@ -85,12 +86,6 @@ int64_t parallel_tcp_write(int descriptor, const void *buffer, size_t length);
 int parallel_tcp_set_nodelay(int descriptor, int enabled);
 int parallel_tcp_close(int descriptor);
 
-/*
- * Native subprocess execution. No shell is inserted. argv must be NULL-terminated
- * and argv[0] must be present. A NULL envp means a deliberately empty child
- * environment rather than inheriting the parent environment. stdin/stdout/stderr
- * are always created as nonblocking pipes owned by the returned process handle.
- */
 int parallel_process_spawn(
   parallel_runtime *runtime,
   const char *executable,
@@ -106,7 +101,6 @@ int64_t parallel_process_read_stderr(parallel_process *process, void *buffer, si
 int parallel_process_poll_exit(parallel_process *process);
 int parallel_process_signal(parallel_process *process, int signal_number);
 int parallel_process_close_pipes(parallel_process *process);
-/* terminate_signal <= 0 refuses to dispose a still-running process with -16. */
 int parallel_process_dispose(parallel_process *process, int terminate_signal);
 
 int parallel_runtime_run_once(parallel_runtime *runtime, uint64_t max_wait_ms);

@@ -10,11 +10,13 @@ const nativeRoot = path.resolve(here, '..', 'native');
 export function nativeRuntimeManifest() {
   return {
     protocol: 'parallel-native/1',
-    abiVersion: 5,
+    abiVersion: 6,
     implementation: 'c11-posix-reactor',
     capabilities: ['timers','filesystem','network','process','crypto','workers'],
     eventLoop: [
       'fifo-tasks',
+      'thread-safe-task-posting',
+      'reactor-wakeup-pipe',
       'one-shot-timers',
       'timer-cancellation',
       'descriptor-readiness',
@@ -48,7 +50,7 @@ export async function buildNativeKernel({ cc = process.env.CC || 'cc', outDir, e
   const results = {};
   for (const [name, source] of sources) {
     const object = path.join(root, `parallel_${name}.o`);
-    const result = await run(cc, ['-std=c11','-O2','-Wall','-Wextra','-Werror','-I',nativeRoot,'-c',source,'-o',object,...extraFlags]);
+    const result = await run(cc, ['-std=c11','-O2','-Wall','-Wextra','-Werror','-pthread','-I',nativeRoot,'-c',source,'-o',object,...extraFlags]);
     results[name] = result;
     if (!result.ok) return { ok:false, result, objects, manifest:nativeRuntimeManifest() };
     objects.push(object);
@@ -79,7 +81,7 @@ export async function linkNativeProbe(sourceText, { cc = process.env.CC || 'cc',
   const binary = path.join(root, process.platform === 'win32' ? 'parallel-probe.exe' : 'parallel-probe');
   await fs.writeFile(probe, sourceText, 'utf8');
   const compile = await run(cc, [
-    '-std=c11','-O2','-Wall','-Wextra','-Werror','-I',nativeRoot,
+    '-std=c11','-O2','-Wall','-Wextra','-Werror','-pthread','-I',nativeRoot,
     probe,
     path.join(nativeRoot,'parallel_runtime.c'),
     path.join(nativeRoot,'parallel_tcp.c'),

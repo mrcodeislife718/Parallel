@@ -6,6 +6,9 @@
 #include <limits.h>
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 typedef struct parallel_task_node {
   parallel_task_fn task;
@@ -33,6 +36,9 @@ typedef struct parallel_watch_node {
 typedef struct parallel_runtime_state {
   parallel_task_node *task_head;
   parallel_task_node *task_tail;
+  pthread_mutex_t task_mutex;
+  int wake_read;
+  int wake_write;
   parallel_timer_node *timer_head;
   parallel_watch_node *watch_head;
   size_t watch_count;
@@ -41,6 +47,37 @@ typedef struct parallel_runtime_state {
 static parallel_runtime_state *state_of(const parallel_runtime *runtime) {
   if (runtime == NULL) return NULL;
   return (parallel_runtime_state *) runtime->internal;
+}
+
+static int make_nonblocking_cloexec(int descriptor) {
+  int flags = fcntl(descriptor, F_GETFL, 0);
+  if (flags < 0) return -errno;
+  if (fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) != 0) return -errno;
+  int fdflags = fcntl(descriptor, F_GETFD, 0);
+  if (fdflags < 0) return -errno;
+  if (fcntl(descriptor, F_SETFD, fdflags | FD_CLOEXEC) != 0) return -errno;
+  return 0;
+}
+
+static int signal_wakeup(parallel_runtime_state *state) {
+  if (state == NULL || state->wake_write < 0) return -2;
+  const unsigned char byte = 1u;
+  ssize_t result;
+  do { result = write(state->wake_write, &byte, 1u); } while (result < 0 && errno == EINTR);
+  if (result == 1) return 0;
+  if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+  return result < 0 ? -errno : -7;
+}
+
+static void drain_wakeup(parallel_runtime_state *state) {
+  if (state == NULL || state->wake_read < 0) return;
+  unsigned char buffer[128];
+  for (;;) {
+    ssize_t result = read(state->wake_read, buffer, sizeof(buffer));
+    if (result > 0) continue;
+    if (result < 0 && errno == EINTR) continue;
+    break;
+  }
 }
 
 static void free_tasks(parallel_task_node *node) {
@@ -71,6 +108,28 @@ int parallel_runtime_init(parallel_runtime *runtime, uint32_t capabilities) {
   if (runtime == NULL) return -1;
   parallel_runtime_state *state = (parallel_runtime_state *) calloc(1u, sizeof(parallel_runtime_state));
   if (state == NULL) return -5;
+  state->wake_read = -1;
+  state->wake_write = -1;
+  if (pthread_mutex_init(&state->task_mutex, NULL) != 0) {
+    free(state);
+    return -8;
+  }
+  int wake_pipe[2] = {-1, -1};
+  if (pipe(wake_pipe) != 0) {
+    pthread_mutex_destroy(&state->task_mutex);
+    free(state);
+    return -errno;
+  }
+  if (make_nonblocking_cloexec(wake_pipe[0]) != 0 || make_nonblocking_cloexec(wake_pipe[1]) != 0) {
+    close(wake_pipe[0]);
+    close(wake_pipe[1]);
+    pthread_mutex_destroy(&state->task_mutex);
+    free(state);
+    return -7;
+  }
+  state->wake_read = wake_pipe[0];
+  state->wake_write = wake_pipe[1];
+
   runtime->abi_version = PARALLEL_NATIVE_ABI_VERSION;
   runtime->capabilities = capabilities;
   runtime->tasks_executed = 0;
@@ -113,10 +172,22 @@ int parallel_runtime_post(parallel_runtime *runtime, parallel_task_fn task, void
   if (node == NULL) return -5;
   node->task = task;
   node->context = context;
+
+  if (pthread_mutex_lock(&state->task_mutex) != 0) {
+    free(node);
+    return -8;
+  }
+  if (runtime->closed) {
+    pthread_mutex_unlock(&state->task_mutex);
+    free(node);
+    return -2;
+  }
   if (state->task_tail == NULL) state->task_head = node;
   else state->task_tail->next = node;
   state->task_tail = node;
-  return 0;
+  pthread_mutex_unlock(&state->task_mutex);
+
+  return signal_wakeup(state);
 }
 
 int parallel_runtime_set_timeout(
@@ -151,6 +222,7 @@ int parallel_runtime_set_timeout(
   node->next = *cursor;
   *cursor = node;
   *timer_id = node->id;
+  (void) signal_wakeup(state);
   return 0;
 }
 
@@ -165,6 +237,7 @@ int parallel_runtime_cancel_timer(parallel_runtime *runtime, parallel_timer_id t
       parallel_timer_node *removed = *cursor;
       *cursor = removed->next;
       free(removed);
+      (void) signal_wakeup(state);
       return 1;
     }
     cursor = &(*cursor)->next;
@@ -202,6 +275,7 @@ int parallel_runtime_watch_descriptor(
   state->watch_head = node;
   state->watch_count += 1u;
   *watch_id = node->id;
+  (void) signal_wakeup(state);
   return 0;
 }
 
@@ -217,6 +291,7 @@ int parallel_runtime_unwatch_descriptor(parallel_runtime *runtime, parallel_watc
       *cursor = removed->next;
       free(removed);
       state->watch_count -= 1u;
+      (void) signal_wakeup(state);
       return 1;
     }
     cursor = &(*cursor)->next;
@@ -225,16 +300,28 @@ int parallel_runtime_unwatch_descriptor(parallel_runtime *runtime, parallel_watc
 }
 
 static int run_task(parallel_runtime *runtime, parallel_runtime_state *state) {
+  if (pthread_mutex_lock(&state->task_mutex) != 0) return -8;
   parallel_task_node *node = state->task_head;
+  if (node != NULL) {
+    state->task_head = node->next;
+    if (state->task_head == NULL) state->task_tail = NULL;
+  }
+  pthread_mutex_unlock(&state->task_mutex);
   if (node == NULL) return 0;
-  state->task_head = node->next;
-  if (state->task_head == NULL) state->task_tail = NULL;
+
   parallel_task_fn task = node->task;
   void *context = node->context;
   free(node);
   (void) task(context);
   runtime->tasks_executed += 1;
   return 1;
+}
+
+static int has_tasks(parallel_runtime_state *state) {
+  if (pthread_mutex_lock(&state->task_mutex) != 0) return 0;
+  const int present = state->task_head != NULL;
+  pthread_mutex_unlock(&state->task_mutex);
+  return present;
 }
 
 static int run_due_timer(parallel_runtime *runtime, parallel_runtime_state *state, uint64_t now) {
@@ -265,22 +352,19 @@ static int timeout_for_poll(const parallel_runtime_state *state, uint64_t now, u
 }
 
 static int poll_one_ready_descriptor(parallel_runtime *runtime, parallel_runtime_state *state, int timeout_ms) {
-  if (state->watch_count == 0) {
-    if (timeout_ms <= 0) return 0;
-    int result;
-    do { result = poll(NULL, 0, timeout_ms); } while (result < 0 && errno == EINTR);
-    return result < 0 ? -7 : 0;
-  }
-
-  struct pollfd *pollfds = (struct pollfd *) calloc(state->watch_count, sizeof(struct pollfd));
-  parallel_watch_node **nodes = (parallel_watch_node **) calloc(state->watch_count, sizeof(parallel_watch_node *));
+  const size_t poll_count = state->watch_count + 1u;
+  struct pollfd *pollfds = (struct pollfd *) calloc(poll_count, sizeof(struct pollfd));
+  parallel_watch_node **nodes = (parallel_watch_node **) calloc(poll_count, sizeof(parallel_watch_node *));
   if (pollfds == NULL || nodes == NULL) {
     free(pollfds);
     free(nodes);
     return -5;
   }
 
-  size_t index = 0;
+  pollfds[0].fd = state->wake_read;
+  pollfds[0].events = POLLIN;
+
+  size_t index = 1u;
   for (parallel_watch_node *node = state->watch_head; node != NULL; node = node->next) {
     nodes[index] = node;
     pollfds[index].fd = node->descriptor;
@@ -290,15 +374,22 @@ static int poll_one_ready_descriptor(parallel_runtime *runtime, parallel_runtime
   }
 
   int ready;
-  do { ready = poll(pollfds, (nfds_t) state->watch_count, timeout_ms); } while (ready < 0 && errno == EINTR);
+  do { ready = poll(pollfds, (nfds_t) poll_count, timeout_ms); } while (ready < 0 && errno == EINTR);
   if (ready <= 0) {
     free(nodes);
     free(pollfds);
     return ready < 0 ? -7 : 0;
   }
 
+  if (pollfds[0].revents != 0) {
+    drain_wakeup(state);
+    free(nodes);
+    free(pollfds);
+    return run_task(runtime, state);
+  }
+
   int executed = 0;
-  for (index = 0; index < state->watch_count; index += 1u) {
+  for (index = 1u; index < poll_count; index += 1u) {
     if (pollfds[index].revents == 0) continue;
     uint32_t events = 0;
     if (pollfds[index].revents & POLLIN) events |= PARALLEL_IO_READABLE;
@@ -324,12 +415,13 @@ int parallel_runtime_run_once(parallel_runtime *runtime, uint64_t max_wait_ms) {
   parallel_runtime_state *state = state_of(runtime);
   if (state == NULL) return -2;
 
-  if (run_task(runtime, state)) return 1;
+  int task_result = run_task(runtime, state);
+  if (task_result != 0) return task_result;
+
   uint64_t now = parallel_monotonic_ns();
   if (now == 0) return -6;
   if (run_due_timer(runtime, state, now)) return 1;
 
-  if (state->watch_count == 0 && state->timer_head == NULL) return 0;
   const int timeout_ms = timeout_for_poll(state, now, max_wait_ms);
   const int io_result = poll_one_ready_descriptor(runtime, state, timeout_ms);
   if (io_result != 0) return io_result;
@@ -346,7 +438,7 @@ int parallel_runtime_run(parallel_runtime *runtime) {
   if (state == NULL) return -2;
   runtime->stop_requested = 0;
   while (!runtime->stop_requested) {
-    if (state->task_head == NULL && state->timer_head == NULL && state->watch_count == 0) return 0;
+    if (!has_tasks(state) && state->timer_head == NULL && state->watch_count == 0) return 0;
     int result = parallel_runtime_run_once(runtime, 1000u);
     if (result < 0) return result;
   }
@@ -357,6 +449,8 @@ int parallel_runtime_stop(parallel_runtime *runtime) {
   if (runtime == NULL) return -1;
   if (runtime->closed) return -2;
   runtime->stop_requested = 1;
+  parallel_runtime_state *state = state_of(runtime);
+  if (state != NULL) (void) signal_wakeup(state);
   return 0;
 }
 
@@ -365,9 +459,18 @@ int parallel_runtime_close(parallel_runtime *runtime) {
   if (runtime->closed) return -2;
   parallel_runtime_state *state = state_of(runtime);
   if (state != NULL) {
-    free_tasks(state->task_head);
+    runtime->closed = 1;
+    if (pthread_mutex_lock(&state->task_mutex) == 0) {
+      free_tasks(state->task_head);
+      state->task_head = NULL;
+      state->task_tail = NULL;
+      pthread_mutex_unlock(&state->task_mutex);
+    }
     free_timers(state->timer_head);
     free_watches(state->watch_head);
+    if (state->wake_read >= 0) close(state->wake_read);
+    if (state->wake_write >= 0) close(state->wake_write);
+    pthread_mutex_destroy(&state->task_mutex);
     free(state);
   }
   runtime->internal = NULL;
@@ -376,5 +479,5 @@ int parallel_runtime_close(parallel_runtime *runtime) {
 }
 
 const char *parallel_runtime_version(void) {
-  return "parallel-native/0.5-abi5";
+  return "parallel-native/0.6-abi6";
 }

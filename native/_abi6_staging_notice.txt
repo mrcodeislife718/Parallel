@@ -1,1 +1,0 @@
-ABI 6 staged implementation is being applied to the canonical runtime files in the same tranche. This marker prevents treating the documentation-only commits as qualification evidence.
