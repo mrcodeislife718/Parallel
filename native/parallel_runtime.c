@@ -376,5 +376,5 @@ int parallel_runtime_close(parallel_runtime *runtime) {
 }
 
 const char *parallel_runtime_version(void) {
-  return "parallel-native/0.3-abi3";
+  return "parallel-native/0.4-abi4";
 }
