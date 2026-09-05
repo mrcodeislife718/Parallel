@@ -1,0 +1,3 @@
+#define PARALLEL_NATIVE_ABI_VERSION 6u
+
+/* ABI 6 contract: parallel_runtime_post() is safe for external pthread producers. The runtime owns a hidden nonblocking wake descriptor that interrupts poll() whenever cross-thread work is queued. The runtime must not be closed until all producer threads have stopped posting. */
