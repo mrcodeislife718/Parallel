@@ -41,6 +41,7 @@ export * from './runtime.js';
 export { CapabilitySet } from './capabilities.js';
 export { PermissionPolicy, PermissionAuditLog } from './permission-policy.js';
 export { createParallelFetch, ParallelFetchError } from './web-runtime.js';
+export { connectTls, ParallelTlsError } from './tls-runtime.js';
 export { CapabilityWorkerPool, ParallelWorkerPolicyError, deriveWorkerCapabilityConfig } from './worker-runtime.js';
 export { createWebStreams, readableFrom, writableFrom, transformFrom, collectBytes, collectText, createFileReadableStream, createFileWritableStream, ParallelStreamLimitError } from './web-streams.js';
 export { ParallelModuleRuntime, ParallelModuleGraphError, createModuleGraphManifest, PARALLEL_MODULE_GRAPH_PROTOCOL } from './module-runtime.js';
