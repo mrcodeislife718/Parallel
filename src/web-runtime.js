@@ -29,6 +29,7 @@ export function createParallelFetch({
     while (true) {
       const url = validateHttpUrl(request.url);
       assertUrlAllowed(url, capabilities);
+      const replayable = request.body && request.method !== 'GET' && request.method !== 'HEAD' ? request.clone() : request;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(new ParallelFetchError(`Parallel fetch timed out after ${timeoutMs}ms`, 'PARALLEL_FETCH_TIMEOUT')), timeoutMs);
       timer.unref?.();
@@ -52,7 +53,7 @@ export function createParallelFetch({
       validateHttpUrl(nextUrl.href);
       assertUrlAllowed(nextUrl, capabilities);
       redirects += 1;
-      request = redirectRequest(request, nextUrl, response.status);
+      request = redirectRequest(replayable, nextUrl, response.status);
     }
   };
 }
