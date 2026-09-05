@@ -3,7 +3,6 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ParallelPermissionError } from './index.js';
 
 export const PARALLEL_MODULE_GRAPH_PROTOCOL = 'parallel-module-graph/1';
 
@@ -96,9 +95,15 @@ export class ParallelModuleRuntime {
   #authorizedDynamicDependencies(record) {
     const allowed = {};
     for (const [specifier, target] of Object.entries(record.dynamicDependencies ?? {})) {
-      if (!this.capabilities) throw new ParallelPermissionError('import', specifier);
-      this.capabilities.assertImport?.(specifier);
-      allowed[specifier] = target;
+      try {
+        if (!this.capabilities?.assertImport) continue;
+        this.capabilities.assertImport(specifier);
+        allowed[specifier] = target;
+      } catch {
+        // Keep denied dynamic imports out of the runtime map. If code actually
+        // executes one, the runner rejects it at that point instead of blocking
+        // startup for an unused optional path.
+      }
     }
     return allowed;
   }
@@ -167,9 +172,7 @@ async function resolveModuleFile(projectRoot, relative) {
 
 function inside(root, target) { return target === root || target.startsWith(`${root}${path.sep}`); }
 function sha256(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
-function graphDigest(manifest) {
-  return sha256(JSON.stringify(canonicalize({ protocol: manifest.protocol, entry: manifest.entry, modules: manifest.modules })));
-}
+function graphDigest(manifest) { return sha256(JSON.stringify(canonicalize({ protocol: manifest.protocol, entry: manifest.entry, modules: manifest.modules }))); }
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().filter((key) => key !== 'digest' && value[key] !== undefined).map((key) => [key, canonicalize(value[key])]));
