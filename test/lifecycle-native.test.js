@@ -101,17 +101,18 @@ test('TCP refusal, process failure, and capability denial are observable failure
   assert.equal(stderr, 'nope');
 });
 
-test('native Parallel kernel compiles independently of Node and executes queued tasks and timers', async (t) => {
+test('native Parallel kernel compiles independently of Node and runs tasks, timers, and descriptor readiness', async (t) => {
   if (process.platform === 'win32') t.skip('native proof currently targets POSIX C11 runners');
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'parallel-native-'));
   t.after(() => fs.rm(root, { recursive:true, force:true }));
   const kernel = await buildNativeKernel({ outDir:path.join(root,'object') });
   assert.equal(kernel.ok, true, kernel.result?.stderr);
-  assert.equal(kernel.manifest.abiVersion, 2);
-  assert.ok(kernel.manifest.eventLoop.includes('one-shot-timers'));
+  assert.equal(kernel.manifest.abiVersion, 3);
+  assert.ok(kernel.manifest.eventLoop.includes('descriptor-readiness'));
+  assert.ok(kernel.manifest.eventLoop.includes('poll-reactor'));
   assert.equal(nativeRuntimeManifest().boundary, 'native-kernel');
 
-  const probe = await linkNativeProbe(`#include <stdio.h>\n#include "parallel_runtime.h"\nstatic int add(void *ctx){ int *v=(int*)ctx; *v += 1; return 0; }\nstatic int add_ten(void *ctx){ int *v=(int*)ctx; *v += 10; return 0; }\nint main(void){ parallel_runtime rt; int value=30; parallel_timer_id timer=0,cancelled=0; if(parallel_runtime_init(&rt, PARALLEL_CAP_TIMERS|PARALLEL_CAP_CRYPTO)!=0)return 1; if(rt.abi_version!=2)return 2; if(!parallel_runtime_has_capability(&rt,PARALLEL_CAP_TIMERS))return 3; if(parallel_runtime_post(&rt,add,&value)!=0)return 4; if(parallel_runtime_set_timeout(&rt,1,add_ten,&value,&timer)!=0||timer==0)return 5; if(parallel_runtime_set_timeout(&rt,1,add_ten,&value,&cancelled)!=0)return 6; if(parallel_runtime_cancel_timer(&rt,cancelled)!=1)return 7; if(parallel_runtime_run(&rt)!=0)return 8; if(value!=41)return 9; if(rt.tasks_executed!=2||rt.timers_executed!=1)return 10; if(parallel_runtime_close(&rt)!=0)return 11; if(parallel_runtime_post(&rt,add,&value)!=-2)return 12; printf("%s:%d:%llu:%llu\\n", parallel_runtime_version(), value, (unsigned long long)rt.tasks_executed, (unsigned long long)rt.timers_executed); return 0; }`, { outDir:path.join(root,'probe') });
+  const probe = await linkNativeProbe(`#include <stdio.h>\n#include <unistd.h>\n#include <stdint.h>\n#include \"parallel_runtime.h\"\nstatic int add(void *ctx){ int *v=(int*)ctx; *v += 1; return 0; }\nstatic int add_ten(void *ctx){ int *v=(int*)ctx; *v += 10; return 0; }\nstatic int on_readable(int fd,uint32_t events,void *ctx){ int *v=(int*)ctx; char c=0; if(!(events & PARALLEL_IO_READABLE))return -1; if(read(fd,&c,1)!=1)return -2; *v += (int)c; return 0; }\nint main(void){ parallel_runtime rt; int value=30; int fds[2]; parallel_timer_id timer=0,cancelled=0; parallel_watch_id watch=0; if(pipe(fds)!=0)return 1; if(parallel_runtime_init(&rt, PARALLEL_CAP_TIMERS|PARALLEL_CAP_FILESYSTEM|PARALLEL_CAP_CRYPTO)!=0)return 2; if(rt.abi_version!=3)return 3; if(!parallel_runtime_has_capability(&rt,PARALLEL_CAP_TIMERS))return 4; if(parallel_runtime_post(&rt,add,&value)!=0)return 5; if(parallel_runtime_set_timeout(&rt,1,add_ten,&value,&timer)!=0||timer==0)return 6; if(parallel_runtime_set_timeout(&rt,1,add_ten,&value,&cancelled)!=0)return 7; if(parallel_runtime_cancel_timer(&rt,cancelled)!=1)return 8; if(parallel_runtime_watch_descriptor(&rt,fds[0],PARALLEL_IO_READABLE,on_readable,&value,&watch)!=0||watch==0)return 9; char byte=2; if(write(fds[1],&byte,1)!=1)return 10; if(parallel_runtime_run_once(&rt,50)<0)return 11; if(parallel_runtime_unwatch_descriptor(&rt,watch)!=1)return 12; if(parallel_runtime_run(&rt)!=0)return 13; if(value!=43)return 14; if(rt.tasks_executed!=3||rt.timers_executed!=1||rt.io_events_executed!=1)return 15; close(fds[0]); close(fds[1]); if(parallel_runtime_close(&rt)!=0)return 16; if(parallel_runtime_post(&rt,add,&value)!=-2)return 17; printf(\"%s:%d:%llu:%llu:%llu\\n\", parallel_runtime_version(), value, (unsigned long long)rt.tasks_executed, (unsigned long long)rt.timers_executed, (unsigned long long)rt.io_events_executed); return 0; }`, { outDir:path.join(root,'probe') });
   assert.equal(probe.ok, true, probe.stderr ?? probe.compile?.stderr);
-  assert.equal(probe.stdout.trim(), 'parallel-native/0.2-abi2:41:2:1');
+  assert.equal(probe.stdout.trim(), 'parallel-native/0.3-abi3:43:3:1:1');
 });
