@@ -41,5 +41,6 @@ export * from './runtime.js';
 export { CapabilitySet } from './capabilities.js';
 export { PermissionPolicy, PermissionAuditLog } from './permission-policy.js';
 export { createParallelFetch, ParallelFetchError } from './web-runtime.js';
+export { CapabilityWorkerPool, ParallelWorkerPolicyError, deriveWorkerCapabilityConfig } from './worker-runtime.js';
 export { ParallelModuleRuntime, ParallelModuleGraphError, createModuleGraphManifest, PARALLEL_MODULE_GRAPH_PROTOCOL } from './module-runtime.js';
 export { nativeRuntimeManifest, buildNativeKernel, linkNativeProbe } from './native.js';
