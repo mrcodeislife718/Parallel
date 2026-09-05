@@ -10,10 +10,19 @@ const nativeRoot = path.resolve(here, '..', 'native');
 export function nativeRuntimeManifest() {
   return {
     protocol: 'parallel-native/1',
-    abiVersion: 2,
-    implementation: 'c11',
+    abiVersion: 3,
+    implementation: 'c11-posix-reactor',
     capabilities: ['timers','filesystem','network','process','crypto','workers'],
-    eventLoop: ['fifo-tasks','one-shot-timers','timer-cancellation','bounded-run-once','continuous-run','stop-close-lifecycle'],
+    eventLoop: [
+      'fifo-tasks',
+      'one-shot-timers',
+      'timer-cancellation',
+      'descriptor-readiness',
+      'poll-reactor',
+      'bounded-run-once',
+      'continuous-run',
+      'stop-close-lifecycle'
+    ],
     boundary: 'native-kernel',
     status: 'active-native-transition'
   };
