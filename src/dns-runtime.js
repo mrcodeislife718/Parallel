@@ -78,8 +78,8 @@ export function createDnsResolver({ capabilities, resolverFactory = () => new Re
     },
 
     async reverse(address, options = {}) {
-      const host = authorizeDns(capabilities, address);
-      if (!isIP(host)) throw new TypeError('reverse(address) requires an IPv4 or IPv6 address');
+      if (typeof address !== 'string' || !isIP(address.trim())) throw new TypeError('reverse(address) requires an IPv4 or IPv6 address');
+      const host = authorizeDns(capabilities, address.trim());
       const resolver = resolverFactory();
       if (!resolver || typeof resolver.reverse !== 'function') throw new TypeError('resolverFactory must return a DNS Resolver');
       configureServers(resolver, options.servers, capabilities);
