@@ -42,6 +42,7 @@ export { CapabilitySet } from './capabilities.js';
 export { PermissionPolicy, PermissionAuditLog } from './permission-policy.js';
 export { createParallelFetch, ParallelFetchError } from './web-runtime.js';
 export { connectTls, ParallelTlsError } from './tls-runtime.js';
+export { createDnsResolver, ParallelDnsError } from './dns-runtime.js';
 export { runProcess, ParallelProcessError } from './process-runtime.js';
 export { CapabilityWorkerPool, ParallelWorkerPolicyError, deriveWorkerCapabilityConfig } from './worker-runtime.js';
 export { createWebStreams, readableFrom, writableFrom, transformFrom, collectBytes, collectText, createFileReadableStream, createFileWritableStream, ParallelStreamLimitError } from './web-streams.js';
