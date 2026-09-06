@@ -48,3 +48,4 @@ export { CapabilityWorkerPool, ParallelWorkerPolicyError, deriveWorkerCapability
 export { createWebStreams, readableFrom, writableFrom, transformFrom, collectBytes, collectText, createFileReadableStream, createFileWritableStream, ParallelStreamLimitError } from './web-streams.js';
 export { ParallelModuleRuntime, ParallelModuleGraphError, createModuleGraphManifest, PARALLEL_MODULE_GRAPH_PROTOCOL } from './module-runtime.js';
 export { nativeRuntimeManifest, buildNativeKernel, linkNativeProbe } from './native.js';
+export { RecoveryStore, RecoveryCorruptionError } from './disaster-recovery.js';
