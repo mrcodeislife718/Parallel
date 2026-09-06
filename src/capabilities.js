@@ -29,6 +29,14 @@ export class CapabilitySet extends BaseCapabilitySet {
     return resource;
   }
 
+  assertDnsHost(host) {
+    if (typeof host !== 'string' || !host) throw new TypeError('DNS hostname must be a non-empty string');
+    const resource = host;
+    const allowed = this.network.has('*') || this.network.has(host) || [...this.network].some((entry) => entry.startsWith(`${host}:`));
+    this.#enforce('network.dns', resource, allowed);
+    return resource;
+  }
+
   assertImport(specifier) {
     let allowed = true;
     try { super.assertImport(specifier); } catch (error) { if (!(error instanceof ParallelPermissionError)) throw error; allowed = false; }
@@ -85,6 +93,9 @@ export class CapabilitySet extends BaseCapabilitySet {
       else if (capability === 'network') {
         const [host, portText] = splitHostPort(resource);
         super.assertHost(host, Number(portText));
+      } else if (capability === 'network.dns') {
+        if (typeof resource !== 'string' || !resource) throw new TypeError('DNS hostname must be a non-empty string');
+        if (!this.network.has('*') && !this.network.has(resource) && ![...this.network].some((entry) => entry.startsWith(`${resource}:`))) throw new ParallelPermissionError('network.dns', resource);
       } else if (capability === 'import') super.assertImport(resource);
       else if (capability === 'environment') super.assertEnv(resource);
       else if (capability === 'process') super.assertProcess(resource);
