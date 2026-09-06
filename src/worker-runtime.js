@@ -65,9 +65,13 @@ export class CapabilityWorkerPool {
       });
       worker.on('message', (message) => this.#onMessage(message));
       worker.on('error', (error) => this.#failWorker(worker, error));
-      worker.on('exit', (code) => { if (!this.closed && code !== 0) this.#failWorker(worker, new Error(`Parallel worker exited with code ${code}`)); });
+      worker.on('exit', (code) => {
+        if (this.closed) return;
+        this.#failWorker(worker, new Error(`Parallel worker exited with code ${code}`));
+      });
       return worker;
     });
+    this.liveWorkers = new Set(this.workers);
   }
 
   exec(payload, { signal, timeoutMs = this.taskTimeoutMs } = {}) {
@@ -75,8 +79,9 @@ export class CapabilityWorkerPool {
     if (this.pending.size >= this.maxPending) return Promise.reject(new Error('Parallel worker pool pending-task limit reached'));
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1) return Promise.reject(new TypeError('timeoutMs must be a positive integer'));
     if (signal?.aborted) return Promise.reject(signal.reason ?? new Error('worker task aborted'));
+    const worker = this.#nextWorker();
+    if (!worker) return Promise.reject(new Error('Parallel worker pool has no live workers'));
     const id = crypto.randomUUID();
-    const worker = this.workers[this.cursor++ % this.workers.length];
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -90,8 +95,28 @@ export class CapabilityWorkerPool {
       };
       signal?.addEventListener('abort', onAbort, { once: true });
       this.pending.set(id, { worker, resolve, reject, timer, signal, onAbort });
-      worker.postMessage({ id, payload });
+      try {
+        worker.postMessage({ id, payload });
+      } catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        this.#failWorker(worker, error);
+        reject(error);
+      }
     });
+  }
+
+  #nextWorker() {
+    if (this.liveWorkers.size === 0) return null;
+    for (let offset = 0; offset < this.workers.length; offset += 1) {
+      const index = (this.cursor + offset) % this.workers.length;
+      const worker = this.workers[index];
+      if (!this.liveWorkers.has(worker)) continue;
+      this.cursor = index + 1;
+      return worker;
+    }
+    return null;
   }
 
   #onMessage(message) {
@@ -105,6 +130,7 @@ export class CapabilityWorkerPool {
   }
 
   #failWorker(worker, error) {
+    this.liveWorkers.delete(worker);
     for (const [id, entry] of this.pending) {
       if (entry.worker !== worker) continue;
       this.pending.delete(id);
@@ -114,11 +140,12 @@ export class CapabilityWorkerPool {
     }
   }
 
-  snapshot() { return { size: this.workers.length, pending: this.pending.size, permissions: structuredClone(this.childPermissions), closed: this.closed }; }
+  snapshot() { return { size: this.workers.length, live: this.liveWorkers.size, pending: this.pending.size, permissions: structuredClone(this.childPermissions), closed: this.closed }; }
 
   async close() {
     if (this.closed) return;
     this.closed = true;
+    this.liveWorkers.clear();
     for (const [id, entry] of this.pending) {
       this.pending.delete(id);
       clearTimeout(entry.timer);
