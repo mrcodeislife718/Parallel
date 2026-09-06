@@ -96,3 +96,18 @@ test('worker pool bounds task lifetime, pending work, and supports cancellation'
     await pool.close();
   }
 });
+
+test('worker exit only fails its own tasks and dead workers are removed from scheduling', async () => {
+  const parent = new CapabilitySet({ workers: true, timers: true });
+  const pool = new CapabilityWorkerPool({ size: 2, workerUrl: fixture, capabilities: parent, permissions: 'none', taskTimeoutMs: 1000, maxPending: 8 });
+  try {
+    const healthy = pool.exec({ delayMs: 50, value: 'healthy' });
+    const dying = pool.exec({ exitCode: 7 });
+    await assert.rejects(dying, /exited with code 7/);
+    assert.equal(await healthy, 'healthy');
+    assert.equal(pool.snapshot().live, 1);
+    assert.equal(await pool.exec({ value: 'still-alive' }), 'still-alive');
+  } finally {
+    await pool.close();
+  }
+});
