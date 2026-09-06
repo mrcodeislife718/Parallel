@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 parentPort.on('message', async ({ id, payload }) => {
   try {
+    if (payload?.exitCode != null) process.exit(payload.exitCode);
     if (payload?.delayMs) await new Promise((resolve) => setTimeout(resolve, payload.delayMs));
     if (payload?.fail) {
       parentPort.postMessage({ id, error: { name: 'Error', message: 'worker failure' } });
