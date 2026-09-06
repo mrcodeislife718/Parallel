@@ -138,24 +138,44 @@ export class WorkerPool {
     this.capabilities = capabilities;
     this.capabilities?.assertWorkers();
     this.workers = Array.from({ length: size }, () => new Worker(workerUrl, { workerData }));
+    this.liveWorkers = new Set(this.workers);
     this.cursor = 0;
     this.pending = new Map();
     this.closed = false;
     for (const worker of this.workers) {
       worker.on('message', (message) => this.#onMessage(message));
-      worker.on('error', (error) => this.#failWorker(error));
-      worker.on('exit', (code) => { if (!this.closed && code !== 0) this.#failWorker(new Error(`Parallel worker exited with code ${code}`)); });
+      worker.on('error', (error) => this.#failWorker(worker, error));
+      worker.on('exit', (code) => {
+        if (this.closed) return;
+        this.#failWorker(worker, new Error(`Parallel worker exited with code ${code}`));
+      });
     }
   }
   exec(payload) {
     if (this.closed) return Promise.reject(new Error('worker pool is closed'));
+    const worker = this.#nextWorker();
+    if (!worker) return Promise.reject(new Error('worker pool has no live workers'));
     const id = crypto.randomUUID();
-    const worker = this.workers[this.cursor++ % this.workers.length];
-    return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); worker.postMessage({ id, payload }); });
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { worker, resolve, reject });
+      try { worker.postMessage({ id, payload }); }
+      catch (error) { this.pending.delete(id); this.#failWorker(worker, error); reject(error); }
+    });
+  }
+  #nextWorker() {
+    if (this.liveWorkers.size === 0) return null;
+    for (let offset = 0; offset < this.workers.length; offset += 1) {
+      const index = (this.cursor + offset) % this.workers.length;
+      const worker = this.workers[index];
+      if (!this.liveWorkers.has(worker)) continue;
+      this.cursor = index + 1;
+      return worker;
+    }
+    return null;
   }
   #onMessage(message) { const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id); if (message.error) pending.reject(Object.assign(new Error(message.error.message), message.error)); else pending.resolve(message.value); }
-  #failWorker(error) { for (const pending of this.pending.values()) pending.reject(error); this.pending.clear(); }
-  async close() { this.closed = true; for (const pending of this.pending.values()) pending.reject(new Error('worker pool closed')); this.pending.clear(); await Promise.all(this.workers.map((worker) => worker.terminate())); }
+  #failWorker(worker, error) { this.liveWorkers.delete(worker); for (const [id, pending] of this.pending) { if (pending.worker !== worker) continue; this.pending.delete(id); pending.reject(error); } }
+  async close() { this.closed = true; this.liveWorkers.clear(); for (const pending of this.pending.values()) pending.reject(new Error('worker pool closed')); this.pending.clear(); await Promise.all(this.workers.map((worker) => worker.terminate())); }
 }
 
 export function createStreams() {
