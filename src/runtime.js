@@ -174,9 +174,13 @@ export function createHttpServer(handler, { tls = null, maxBodyBytes = 1024 * 10
     try {
       const declared = req.headers['content-length'] == null ? null : Number(req.headers['content-length']);
       if (declared != null && (!Number.isSafeInteger(declared) || declared < 0)) throw new Error('invalid content-length');
-      if (declared != null && declared > maxBodyBytes) { res.statusCode = 413; res.end(); return; }
+      if (declared != null && declared > maxBodyBytes) { rejectPayloadTooLarge(req, res); return; }
       const chunks = []; let total = 0;
-      for await (const chunk of req) { total += chunk.length; if (total > maxBodyBytes) { req.destroy(); res.statusCode = 413; res.end(); return; } chunks.push(chunk); }
+      for await (const chunk of req) {
+        total += chunk.length;
+        if (total > maxBodyBytes) { rejectPayloadTooLarge(req, res); return; }
+        chunks.push(chunk);
+      }
       const request = { method: req.method, url: `http://${req.headers.host ?? 'localhost'}${req.url}`, headers: req.headers, body: Buffer.concat(chunks) };
       const response = await handler(request);
       res.statusCode = response?.status ?? 200;
@@ -209,6 +213,14 @@ export class RuntimeProfiler {
 
 export async function readFile(file, capabilities) { if (!capabilities) throw new ParallelPermissionError('filesystem.read', path.resolve(file)); return fs.readFile(await capabilities.resolveFile(file, 'read')); }
 export async function writeFile(file, data, capabilities) { if (!capabilities) throw new ParallelPermissionError('filesystem.write', path.resolve(file)); const target = await capabilities.resolveFile(file, 'write'); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, data); }
+
+function rejectPayloadTooLarge(req, res) {
+  res.statusCode = 413;
+  res.shouldKeepAlive = false;
+  res.setHeader('connection', 'close');
+  req.resume();
+  res.end();
+}
 
 function normalizeRoots(values) { return [...new Set((values ?? []).map((entry) => path.resolve(entry)))]; }
 function insideAnyRoot(target, roots) { return roots.some((root) => target === root || target.startsWith(root + path.sep)); }
