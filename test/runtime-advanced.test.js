@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { CapabilitySet, TaskScheduler, TaskGroup, createStreams, createHttpServer, createCrypto, createRuntimeModuleAbi, RuntimeProfiler, ParallelPermissionError } from '../src/index.js';
+import { CapabilitySet, TaskScheduler, TaskGroup, WorkerPool, createStreams, createHttpServer, createCrypto, createRuntimeModuleAbi, RuntimeProfiler, ParallelPermissionError } from '../src/index.js';
+
+const workerFixture = new URL('./fixtures/worker.mjs', import.meta.url);
 
 test('capabilities enforce filesystem, environment, and network boundaries', () => {
   const caps = new CapabilitySet({ filesystem: ['/tmp/parallel-test'], environment: ['HOME'], network: ['localhost:8080'], process: false });
@@ -77,5 +79,18 @@ test('HTTP server rejects chunked oversized bodies without resetting the client 
     assert.equal(handled, 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('legacy WorkerPool keeps healthy workers alive after a sibling exits', async () => {
+  const pool = new WorkerPool({ size: 2, workerUrl: workerFixture, capabilities: new CapabilitySet({ workers: true }) });
+  try {
+    const healthy = pool.exec({ delayMs: 50, value: 'healthy' });
+    const dying = pool.exec({ exitCode: 9 });
+    await assert.rejects(dying, /exited with code 9/);
+    assert.equal(await healthy, 'healthy');
+    assert.equal(await pool.exec({ value: 'survivor' }), 'survivor');
+  } finally {
+    await pool.close();
   }
 });
